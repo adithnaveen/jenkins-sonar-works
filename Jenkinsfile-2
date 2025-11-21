@@ -8,10 +8,7 @@ pipeline {
         DOCKER_REGISTRY = 'your-registry'
     }
     
-    tools {
-        maven 'Maven'
-        jdk 'JDK21'
-    }
+  
 
     stages {
         stage('Checkout') {
