@@ -1,22 +1,127 @@
 pipeline {
-  agent any 
-  options {
-    buildDiscarder(logRotator(numToKeepStr: '5'))
-  }
-  stages {
-    stage('Scan') {
-      steps {
-        withSonarQubeEnv(installationName: 'sq1') { 
-          sh './mvnw clean org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar'
-        }
-      }
+    agent any
+    
+    environment {
+        DOCKER_IMAGE = 'employee-service'
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        // Change this to your Docker registry
+        DOCKER_REGISTRY = 'your-registry'
     }
-    stage("Quality Gate") {
-      steps {
-        timeout(time: 2, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
-        }
-      }
+    
+    tools {
+        maven 'Maven'
+        jdk 'JDK21'
     }
-  }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+        
+        stage('Unit Tests') {
+            steps {
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit '**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=${JOB_NAME} \
+                        -Dsonar.projectName=${JOB_NAME} \
+                        -Dsonar.coverage.exclusions=**/*Test*.java \
+                        -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml \
+                        -Dsonar.java.codeCoveragePlugin=jacoco \
+                        -Dsonar.qualitygate.wait=true
+                    '''
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                script {
+                    timeout(time: 1, unit: 'HOURS') {
+                        def qg = waitForQualityGate()
+                        
+                        // Get SonarQube API token from Jenkins credentials
+                        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                            // Get the project's coverage metrics
+                            def sonarUrl = 'http://sonarqube:9000'
+                            def response = sh(
+                                script: """
+                                    curl -s -u "${SONAR_TOKEN}:" "${sonarUrl}/api/measures/component?component=${JOB_NAME}&metricKeys=coverage" 
+                                """,
+                                returnStdout: true
+                            )
+                            
+                            // Parse the coverage value
+                            def coverage = sh(
+                                script: """
+                                    echo '${response}' | grep -o '"value":"[0-9.]*"' | cut -d'"' -f4
+                                """,
+                                returnStdout: true
+                            ).trim()
+                            
+                            echo "Code Coverage: ${coverage}%"
+                            
+                            if (coverage.toDouble() < 70) {
+                                error "Code coverage is below 70%. Current coverage: ${coverage}%"
+                            }
+                        }
+                        
+                        if (qg.status != 'OK') {
+                            error "Quality gate failed: ${qg.status}"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}")
+                }
+            }
+        }
+        
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    docker.withRegistry('https://${DOCKER_REGISTRY}', 'docker-credentials') {
+                        docker.image("${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}").push()
+                        docker.image("${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline successfully completed!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
 }
