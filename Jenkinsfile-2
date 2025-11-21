@@ -1,22 +1,71 @@
 pipeline {
-  agent any 
+  agent any
   options {
     buildDiscarder(logRotator(numToKeepStr: '5'))
   }
+
+  environment {
+    SONAR_URL = 'http://172.20.240.1:9000/'     // update (example: http://sonarqube:9000)
+    SONAR_PROJECT_KEY = 'demo'        // update to project key
+    SONAR_TOKEN = credentials('sonar-token-global-1')      // create a Jenkins secret text credential
+  }
+
   stages {
+
     stage('Scan') {
       steps {
-        withSonarQubeEnv(installationName: 'sq1') { 
+        withSonarQubeEnv('sq1') {
           sh './mvnw clean org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar'
         }
       }
     }
-    stage("Quality Gate") {
+
+    stage('Quality Gate') {
       steps {
         timeout(time: 2, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
+          script {
+            def qg = waitForQualityGate abortPipeline: false
+            if (qg.status != 'OK') {
+              error "❌ SonarQube Quality Gate failed: ${qg.status}"
+            }
+          }
         }
       }
     }
+
+    stage('Custom Threshold Check (<70 fail)') {
+      steps {
+        script {
+          echo "Checking SonarQube quality score with custom threshold..."
+
+          // API call to SonarQube measures
+          def response = sh(
+            script: """
+              curl -s -u ${SONAR_TOKEN}: \\
+              "${env.SONAR_URL}/api/measures/component?component=${SONAR_PROJECT_KEY}&metricKeys=coverage,reliability_rating,sqale_rating,security_rating"
+            """,
+            returnStdout: true
+          ).trim()
+
+          echo "Sonar API Response: ${response}"
+
+          // Extract coverage using simple grep/sed
+          def coverage = sh(
+            script: "echo '${response}' | grep -o 'coverage[^}]*value\":\"[0-9.]*' | sed 's/.*value\":\"//' ",
+            returnStdout: true
+          ).trim()
+
+          echo "Coverage from Sonar = ${coverage}"
+
+          // Convert to float and compare
+          if (coverage.toFloat() < 70) {
+            error "❌ Coverage = ${coverage}%. Threshold = 70%. Failing pipeline."
+          } else {
+            echo "✅ Coverage = ${coverage}%. Passing custom threshold."
+          }
+        }
+      }
+    }
+
   }
 }
