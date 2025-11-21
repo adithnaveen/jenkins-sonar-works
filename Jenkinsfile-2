@@ -5,9 +5,9 @@ pipeline {
   }
 
   environment {
-    SONAR_URL = 'http://172.20.240.1:9000/'     // update (example: http://sonarqube:9000)
-    SONAR_PROJECT_KEY = 'demo'        // update to project key
-    SONAR_TOKEN = credentials('sonar-token-global-1')      // create a Jenkins secret text credential
+    SONAR_URL = 'http://172.20.240.1:9000'
+    SONAR_PROJECT_KEY = 'com.example:demo'
+    SONAR_TOKEN = credentials('sonar-token-global-1')   // Jenkins secret
   }
 
   stages {
@@ -33,36 +33,37 @@ pipeline {
       }
     }
 
-    stage('Custom Threshold Check (<70 fail)') {
+    stage('Custom Coverage Check (<70% Fail)') {
       steps {
         script {
-          echo "Checking SonarQube quality score with custom threshold..."
+          echo "Checking SonarQube coverage threshold..."
 
-          // API call to SonarQube measures
           def response = sh(
             script: """
               curl -s -u ${SONAR_TOKEN}: \\
-              "${env.SONAR_URL}/api/measures/component?component=${SONAR_PROJECT_KEY}&metricKeys=coverage,reliability_rating,sqale_rating,security_rating"
+              "${SONAR_URL}/api/measures/component?component=${SONAR_PROJECT_KEY}&metricKeys=coverage"
             """,
             returnStdout: true
           ).trim()
 
-          echo "Sonar API Response: ${response}"
+          echo "SonarQube API Response: ${response}"
 
-          // Extract coverage using simple grep/sed
           def coverage = sh(
-            script: "echo '${response}' | grep -o 'coverage[^}]*value\":\"[0-9.]*' | sed 's/.*value\":\"//' ",
+            script: "echo '${response}' | grep -o '\"value\":\"[0-9.]*\"' | sed 's/\"value\":\"//' | sed 's/\"//'",
             returnStdout: true
           ).trim()
 
-          echo "Coverage from Sonar = ${coverage}"
+          echo "📊 Coverage from SonarQube = ${coverage}%"
 
-          // Convert to float and compare
+          if (coverage == "" || coverage == null) {
+            error "❌ Unable to read code coverage from SonarQube!"
+          }
+
           if (coverage.toFloat() < 70) {
             error "❌ Coverage = ${coverage}%. Threshold = 70%. Failing pipeline."
-          } else {
-            echo "✅ Coverage = ${coverage}%. Passing custom threshold."
           }
+
+          echo "✅ Coverage = ${coverage}%. Passed custom quality check."
         }
       }
     }
