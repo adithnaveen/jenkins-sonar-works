@@ -7,7 +7,7 @@ pipeline {
   environment {
     SONAR_URL = 'http://172.20.240.1:9000'
     SONAR_PROJECT_KEY = 'com.example:demo'
-    SONAR_TOKEN = credentials('sonar-token-global-1')   // Jenkins secret
+    SONAR_TOKEN = credentials('sonar-token-global')   // Jenkins secret
   }
 
   stages {
